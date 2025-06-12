@@ -14,12 +14,23 @@ enum ClusterAlgorithm { geoHash, maxDist }
 class MaxDistParams {
   MaxDistParams(this.epsilon);
 
+  factory MaxDistParams.fromJson(Map<String, dynamic> json) {
+    return MaxDistParams(
+      json['epsilon'] as double,
+    );
+  }
+
   final double epsilon;
+
+  Map<String, dynamic> toJson() {
+    return {
+      'epsilon': epsilon,
+    };
+  }
 }
 
 extension _Add on ScreenCoordinate {
-  ScreenCoordinate add({int x = 0, int y = 0}) =>
-      ScreenCoordinate(x: this.x + x, y: this.y + y);
+  ScreenCoordinate add({int x = 0, int y = 0}) => ScreenCoordinate(x: this.x + x, y: this.y + y);
 }
 
 class ClusterManager<T extends ClusterItem> {
@@ -40,9 +51,7 @@ class ClusterManager<T extends ClusterItem> {
           levels.length <= precision,
           'Levels length should be less than or equal to precision',
         ),
-        devicePixelRatio = devicePixelRatio ??
-            WidgetsBinding
-                .instance.platformDispatcher.views.first.devicePixelRatio {
+        devicePixelRatio = devicePixelRatio ?? WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio {
     this.padding = padding != null
         ? EdgeInsets.only(
             top: padding.top * this.devicePixelRatio,
@@ -137,7 +146,7 @@ class ClusterManager<T extends ClusterItem> {
     }
   }
 
-    Future<LatLngBounds> _addPadding(LatLngBounds mapBounds) async {
+  Future<LatLngBounds> _addPadding(LatLngBounds mapBounds) async {
     final northEastL = mapBounds.northeast;
     final southWestL = mapBounds.southwest;
 
@@ -194,9 +203,23 @@ class ClusterManager<T extends ClusterItem> {
 
     if (clusterAlgorithm == ClusterAlgorithm.geoHash || visibleItems.length >= maxItemsForMaxDistAlgo) {
       final level = _findLevel(levels);
-      markers = _computeClusters(visibleItems, List.empty(growable: true), level: level);
+      final typeErasedClusters = await _computeClusters(visibleItems, level: level);
+
+      final typedClusters = typeErasedClusters.map((cluster) {
+        final typedItems = cluster.items.map((item) => visibleItems.firstWhere((item) => item.id == item.id)).toList();
+        return Cluster(typedItems, cluster.location);
+      }).toList();
+
+      markers = typedClusters;
     } else {
-      markers = _computeClustersWithMaxDist(visibleItems, _zoom);
+      final typeErasedClusters = await _computeClustersWithMaxDist(visibleItems, _getZoomLevel(_zoom), maxDistParams);
+
+      final typedClusters = typeErasedClusters.map((cluster) {
+        final typedItems = cluster.items.map((item) => visibleItems.firstWhere((item) => item.id == item.id)).toList();
+        return Cluster(typedItems, cluster.location);
+      }).toList();
+
+      markers = typedClusters;
     }
 
     return markers;
@@ -243,27 +266,6 @@ class ClusterManager<T extends ClusterItem> {
     return 1;
   }
 
-  List<Cluster<T>> _computeClustersWithMaxDist(List<T> inputItems, double zoom) {
-    final scanner = MaxDistClustering<T>(
-      epsilon: maxDistParams?.epsilon ?? 20,
-    );
-
-    return scanner.run(inputItems, _getZoomLevel(zoom));
-  }
-
-  List<Cluster<T>> _computeClusters(List<T> inputItems, List<Cluster<T>> markerItems, {int level = 5}) {
-    if (inputItems.isEmpty) return markerItems;
-    final nextGeohash = inputItems[0].geohash.substring(0, level);
-
-    final items = inputItems.where((p) => p.geohash.substring(0, level) == nextGeohash).toList();
-
-    markerItems.add(Cluster<T>.fromItems(items));
-
-    final newInputList = List<T>.from(inputItems.where((i) => i.geohash.substring(0, level) != nextGeohash));
-
-    return _computeClusters(newInputList, markerItems, level: level);
-  }
-
   static Future<Marker> Function(Cluster) get _basicMarkerBuilder => (cluster) async {
         return Marker(
           markerId: MarkerId(cluster.getId()),
@@ -307,5 +309,107 @@ class ClusterManager<T extends ClusterItem> {
     if (data == null) return BitmapDescriptor.defaultMarker;
 
     return BitmapDescriptor.fromBytes(data.buffer.asUint8List());
+  }
+}
+
+Future<List<Cluster<ClusterItem>>> _computeClusters(List<ClusterItem> inputItems, {int level = 5}) async {
+  final date = _ComputeClustersDate(inputItems, level);
+  final jsonClusters = await compute(_computeClustersCallback, date.toJson());
+  return jsonClusters.map(Cluster.fromJson).toList();
+}
+
+List<Map<String, dynamic>> _computeClustersCallback(Map<String, dynamic> date) {
+  final params = _ComputeClustersDate.fromJson(date);
+  final clusters = _computeClustersWorker(params.inputItems, List.empty(growable: true), level: params.level);
+  return clusters.map((e) => e.toJson()).toList();
+}
+
+List<Cluster<ClusterItem>> _computeClustersWorker(
+  List<ClusterItem> inputItems,
+  List<Cluster<ClusterItem>> markerItems, {
+  int level = 5,
+}) {
+  if (inputItems.isEmpty) return markerItems;
+  final nextGeohash = inputItems[0].geohash.substring(0, level);
+
+  final items = inputItems.where((p) => p.geohash.substring(0, level) == nextGeohash).toList();
+
+  markerItems.add(Cluster<ClusterItem>.fromItems(items));
+
+  final newInputList = List<ClusterItem>.from(inputItems.where((i) => i.geohash.substring(0, level) != nextGeohash));
+
+  return _computeClustersWorker(newInputList, markerItems, level: level);
+}
+
+Future<List<Cluster<ClusterItem>>> _computeClustersWithMaxDist(
+  List<ClusterItem> inputItems,
+  int zoom,
+  MaxDistParams? params,
+) async {
+  final date = _ComputedMaxDistClustersDate(inputItems, zoom, params);
+  final jsonClusters = await compute(_computeClustersWithMaxDistCallback, date.toJson());
+  return jsonClusters.map(Cluster.fromJson).toList();
+}
+
+List<Map<String, dynamic>> _computeClustersWithMaxDistCallback(Map<String, dynamic> date) {
+  final params = _ComputedMaxDistClustersDate.fromJson(date);
+  final clusters = _computeClustersWithMaxDistWorker(params.inputItems, params.zoom, params.params);
+  return clusters.map((e) => e.toJson()).toList();
+}
+
+List<Cluster<ClusterItem>> _computeClustersWithMaxDistWorker(
+  List<ClusterItem> inputItems,
+  int zoom,
+  MaxDistParams? params,
+) {
+  final scanner = MaxDistClustering<ClusterItem>(
+    epsilon: params?.epsilon ?? 20,
+  );
+
+  return scanner.run(inputItems, zoom);
+}
+
+final class _ComputeClustersDate {
+  _ComputeClustersDate(this.inputItems, this.level);
+
+  factory _ComputeClustersDate.fromJson(Map<String, dynamic> json) {
+    return _ComputeClustersDate(
+      (json['inputItems'] as List<dynamic>).map((e) => ClusterItem.fromJson(e as Map<String, dynamic>)).toList(),
+      json['level'] as int,
+    );
+  }
+
+  final List<ClusterItem> inputItems;
+  final int level;
+
+  Map<String, dynamic> toJson() {
+    return {
+      'inputItems': inputItems.map((e) => e.toJson()).toList(),
+      'level': level,
+    };
+  }
+}
+
+final class _ComputedMaxDistClustersDate {
+  _ComputedMaxDistClustersDate(this.inputItems, this.zoom, this.params);
+
+  factory _ComputedMaxDistClustersDate.fromJson(Map<String, dynamic> json) {
+    return _ComputedMaxDistClustersDate(
+      (json['inputItems'] as List<dynamic>).map((e) => ClusterItem.fromJson(e as Map<String, dynamic>)).toList(),
+      json['zoom'] as int,
+      json['params'] != null ? MaxDistParams.fromJson(json['params'] as Map<String, dynamic>) : null,
+    );
+  }
+
+  final List<ClusterItem> inputItems;
+  final int zoom;
+  final MaxDistParams? params;
+
+  Map<String, dynamic> toJson() {
+    return {
+      'inputItems': inputItems.map((e) => e.toJson()).toList(),
+      'zoom': zoom,
+      'params': params?.toJson(),
+    };
   }
 }

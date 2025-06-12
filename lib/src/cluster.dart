@@ -2,6 +2,7 @@
 
 import 'package:flutter/foundation.dart';
 import 'package:google_maps_cluster_manager_2/google_maps_cluster_manager_2.dart';
+import 'package:google_maps_cluster_manager_2/src/cluster_item.dart';
 import 'package:google_maps_flutter_platform_interface/google_maps_flutter_platform_interface.dart';
 
 @immutable
@@ -23,6 +24,13 @@ class Cluster<T extends ClusterItem> {
           (cluster1.location.longitude * cluster1.count + cluster2.location.longitude * cluster2.count) /
               (cluster1.count + cluster2.count),
         );
+
+  static Cluster<ClusterItem> fromJson(Map<String, dynamic> json) {
+    return Cluster(
+      (json['items'] as List<dynamic>).map((e) => ClusterItem.fromJson(e as Map<String, dynamic>)).toList(),
+      LatLng.fromJson(json['location'])!,
+    );
+  }
 
   final LatLng location;
   final Iterable<T> items;
@@ -48,4 +56,11 @@ class Cluster<T extends ClusterItem> {
 
   @override
   int get hashCode => items.hashCode;
+
+  Map<String, dynamic> toJson() {
+    return {
+      'location': location.toJson(),
+      'items': items.map((e) => e.toJson()).toList(),
+    };
+  }
 }
